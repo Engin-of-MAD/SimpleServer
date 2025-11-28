@@ -22,9 +22,9 @@ public:
     EPollManager& operator=(const EPollManager&) = delete;
     ~EPollManager();
 
-    void addFD(int fd, uint32_t events, void* userData = nullptr);
-    void modifyFD(int fd, uint32_t events, void* userData = nullptr);
-    void removeFD(int fd);
+    void addFD(int fd, uint32_t events);
+    void modifyFD(int fd, uint32_t events);
+    void removeFD(int fd) const;
     int waitForEvents(epoll_event* events, int maxEvents, int timeout = -1);
     int getFD() const { return m_epoll_fd; }
     bool isValid() const { return m_epoll_fd != -1; }
@@ -72,13 +72,14 @@ public:
     void printServerInfo();
     ServerInfo getServerInfo();
 
+    void handleMessage() const;
+
 private:
     int m_server_fd = -1;
     bool m_running = false;
     EPollManager * m_epollManager = nullptr;
     MessageCallback m_messageCallback;
     ServerInfo m_serverInfo;
-    void handleMessage() const;
 };
 
 class TCPServer {
@@ -106,6 +107,8 @@ public:
 
     int getFD() const { return m_server_fd; }
     bool isRunning() const { return m_running; }
+    void handleNewConnection();
+    void handleClientData(int client_fd);
 private:
     int m_server_fd = -1;
     bool m_running = false;
@@ -117,15 +120,14 @@ private:
     ConnectCallback m_connectCallback;
     DisconnectCallback m_disconnectCallback;
 
-    void handleNewConnection();
-    void handleClientData(int client_fd);
-    static void setNonBlocking(int fd);
+
 };
 
 class AsyncServer {
 public:
-    AsyncServer(const std::string& serverIP = "0.0.0.0", int port = 8080);
+    explicit AsyncServer(const std::string& serverIP = "0.0.0.0", int port = 8080);
     ~AsyncServer();
+    void runEventLoop();
     void exec();
     void shutdown();
 private:
@@ -139,13 +141,13 @@ private:
     bool m_running = false;
 
     void setupCallbacks();
-    void handleTCPData(int client_fd, const std::string& data);
-    void handleTCPConnect(int client_fd, const sockaddr_in& addr);
-    void handleTCPDisconnect(int client_fd);
-    void handleUDPData(int client_fd, const sockaddr_in& addr);
-
-    void runEventLoop();
     void setupHandlers();
+
+    void handleTCPConnect(int client_fd, const sockaddr_in &addr);
+    void handleTCPData(int client_fd, const std::string &data);
+    void handleTCPDisconnect(int client_fd);
+    void handleUDPData(const std::string data, const sockaddr_in& addr);
+
     void gracefulShutdown();
 };
 

@@ -62,7 +62,7 @@ void EPollManager::removeFD(int fd) const {
 
 
 int EPollManager::waitForEvents(epoll_event *events, int maxEvents, int timeout) {
-    std::cout << "EPollManager::waitForEvents" << std::endl;
+    // std::cout << "EPollManager::waitForEvents" << std::endl;
     if (m_epoll_fd == -1) {
         throw std::system_error(EBADF, std::system_category(),"EPoll instance is not initialized");
     }
@@ -512,9 +512,7 @@ void TCPServer::handleClientData(int client_fd) {
 }
 AsyncServer::AsyncServer(const std::string &serverIP, int port)
 : m_serverIP(serverIP)
-, m_serverPort(port)
-, m_running(false)
-{
+, m_serverPort(port) {
     m_epollManager = std::make_unique<EPollManager>();
     m_udpServer = std::make_unique<UDPServer>();
     m_tcpServer = std::make_unique<TCPServer>();
@@ -522,7 +520,7 @@ AsyncServer::AsyncServer(const std::string &serverIP, int port)
     m_commandProcessor = std::make_unique<CommandProcessor>();
 
     setupCallbacks();
-    setupHandlers();
+    setupCommandProcessor();
 }
 AsyncServer::~AsyncServer() {
     shutdown();
@@ -589,11 +587,12 @@ void AsyncServer::exec() {
         std::cerr << "Failed to start TCP server: " << std::endl;
         return;
     }
-    if (!m_tcpServer->start(m_serverIP, m_serverPort, m_epollManager.get())) {
+    if (!m_udpServer->start(m_serverIP, m_serverPort, m_epollManager.get())) {
         std::cerr << "Failed to start UDP server: " << std::endl;
         return;
     }
 
+    startConsoleHandler();
     m_running = true;
     std::cout << "AsyncServer started successfully on " << m_serverIP << ":" << m_serverPort << std::endl;
     runEventLoop();
@@ -601,6 +600,20 @@ void AsyncServer::exec() {
 void AsyncServer::shutdown() {
     std::cout << "AsyncServer::shutdown - Initiating shutdown..." << std::endl;
     m_running = false;
+}
+
+void AsyncServer::startConsoleHandler() {
+    if (m_commandProcessor) {
+        m_commandProcessor->startConsoleHandler();
+    }
+}
+void AsyncServer::stopConsoleHandler() {
+    if (m_commandProcessor) {
+        m_commandProcessor->stopConsoleHandler();
+    }
+}
+bool AsyncServer::isConsoleRunning() const {
+    return m_commandProcessor ? m_commandProcessor->isConsoleRunning() : false;
 }
 void AsyncServer::setupCallbacks() {
     m_tcpServer->setDataCallback([this](int client_fd,  const std::string &message) {
@@ -619,9 +632,18 @@ void AsyncServer::setupCallbacks() {
         this->handleUDPData(message, addr);
     });
 }
-void AsyncServer::setupHandlers() {
-    std::cout << "AsyncServer::setupHandlers" << std::endl;
+void AsyncServer::setupCommandProcessor() {
+    std::cout << "AsyncServer::setupCommandProcessor" << std::endl;
+    m_commandProcessor->setShutdownCallback([this]() {
+        std::cout << "Shutdown requested via CommandProcessor" << std::endl;
+        this->shutdown();
+    });
+
+    m_commandProcessor->setStatsCallbacks([this]() {
+        return CommandProcessor::formatStats(*m_serverStats);
+    });
 }
+
 void AsyncServer::handleTCPConnect(int client_fd, const sockaddr_in &addr) {
     char client_ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &addr.sin_addr, client_ip, INET_ADDRSTRLEN);
@@ -629,33 +651,29 @@ void AsyncServer::handleTCPConnect(int client_fd, const sockaddr_in &addr) {
 
     std::cout << "AsyncServer::handleTCPConnect - Client connected: "
                   << client_ip << ":" << client_port << " (fd: " << client_fd << ")" << std::endl;
-
-    // Upd stats server here
-    // connected server
+    m_serverStats->clientConnected();
 }
 void AsyncServer::handleTCPData(int client_fd, const std::string &data) {
     std::cout << "AsyncServer::handleTCPData from client " << client_fd << ": " << data << std::endl;
     std::string response;
-
-    if (!data.empty() && data[0] != '/') {
+    std::string trimmedData = trimNetworkData(data);
+    if (!trimmedData.empty() && trimmedData[0] == '/') {
         // for processor commands
-        // placeholder
-        if (response.find("SHUTDOWN") != std::string::npos) {
+        std::string command = trimmedData;
+        response = m_commandProcessor->processCommand(command, *m_serverStats);
+        if (response == "SHUTDOWN") {
             m_tcpServer->sendData(client_fd, "Server shutting down...");
             shutdown();
             return;
         }
-
     } else {
-        response = data;
+        response = trimmedData;
     }
     m_tcpServer->sendData(client_fd, response);
 }
 void AsyncServer::handleTCPDisconnect(int client_fd) {
     std::cout << "AsyncServer::handleTCPDisconnect - Client disconnected: " << client_fd << std::endl;
-
-    // Upd stats server
-    // disconnected from server
+    m_serverStats->clientDisconnected();
 }
 
 void AsyncServer::handleUDPData(const std::string data, const sockaddr_in &addr) {
@@ -668,8 +686,9 @@ void AsyncServer::handleUDPData(const std::string data, const sockaddr_in &addr)
     std::string response;
     if (!data.empty() && data[0] != '/') {
         // to command processor
-
-        if (response.find("SHUTDOWN") != std::string::npos) {
+        std::string command = data;
+        response = m_commandProcessor->processCommand(command, *m_serverStats);
+        if (response.find("SHUTDOWN")) {
             m_udpServer->sendResponse(addr, "Server shutting down...");
             shutdown();
             return;
@@ -680,9 +699,25 @@ void AsyncServer::handleUDPData(const std::string data, const sockaddr_in &addr)
 
     m_udpServer->sendResponse(addr, response);
 }
+std::string AsyncServer::trimNetworkData(const std::string &data)  {
+    if (data.empty()) return data;
+
+    size_t end = data.length();
+
+    while (end > 0 && (data[end-1] == '\n' || data[end-1] == '\r' || data[end-1] == ' ' || data[end-1] == '\t')) {
+        end--;
+    }
+
+    return data.substr(0, end);
+}
 void AsyncServer::gracefulShutdown() {
     std::cout << "AsyncServer::gracefulShutdown - Performing graceful shutdown..." << std::endl;
 
+    if (m_commandProcessor && m_commandProcessor->isConsoleRunning()) {
+        std::cout << "Stopping console handler in gracefulShutdown..." << std::endl;
+        m_commandProcessor->stopConsoleHandler();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     m_running = false;
 
     if (m_tcpServer) {
@@ -695,4 +730,3 @@ void AsyncServer::gracefulShutdown() {
 
     std::cout << "AsyncServer shutdown complete" << std::endl;
 }
-

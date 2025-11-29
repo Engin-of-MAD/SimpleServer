@@ -130,6 +130,10 @@ public:
     void runEventLoop();
     void exec();
     void shutdown();
+
+    void startConsoleHandler();
+    void stopConsoleHandler();
+    bool isConsoleRunning() const;
 private:
     std::unique_ptr<EPollManager> m_epollManager;
     std::unique_ptr<UDPServer> m_udpServer;
@@ -141,13 +145,13 @@ private:
     bool m_running = false;
 
     void setupCallbacks();
-    void setupHandlers();
+    void setupCommandProcessor();
 
     void handleTCPConnect(int client_fd, const sockaddr_in &addr);
     void handleTCPData(int client_fd, const std::string &data);
     void handleTCPDisconnect(int client_fd);
     void handleUDPData(const std::string data, const sockaddr_in& addr);
-
+    std::string trimNetworkData(const std::string& data);
     void gracefulShutdown();
 };
 
